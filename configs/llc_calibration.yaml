@@ -6,7 +6,7 @@ calibrated: false
 
 # After calibration, update the values below and set calibrated: true
 epsilon: 1.0e-4
-nbeta: 1.0
+nbeta: 46.2  # default_nbeta(256) = 256/log(256); calibrate from here
 gamma: 10.0
 num_chains: 8
 num_draws: 500

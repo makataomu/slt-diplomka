@@ -1,7 +1,11 @@
-"""LLC and drLLC estimation using devinterp's v1 sampler API.
+"""LLC and drLLC estimation using devinterp's SGLD optimizer directly.
 
-Uses estimate_learning_coeff_with_summary from devinterp.slt.sampler,
-which works with any torch.nn.Module and custom loss functions.
+devinterp 2.0.1 removed estimate_learning_coeff_with_summary and its
+sample_single_chain hardcodes data["input_ids"] for language models.
+We implement the LLC sampling loop ourselves using the SGLD optimizer,
+which is stable and uses the same parameters Sullivan used.
+
+Formula: LLC = nbeta * (mean(draw_losses) - init_loss)
 
 Usage:
     python llc_estimation.py --ratio 0.5 --seed 0
@@ -9,26 +13,25 @@ Usage:
 """
 import argparse
 import csv
-import sys
+import warnings
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
+import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import loss_fn, make_split_datasets, make_model
 
-# ─── devinterp v1 imports ─────────────────────────────────────────────────────
+# Suppress devinterp warnings: SGLD is deprecated in name but functional,
+# and the nbeta=1 warning is expected during calibration.
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="devinterp")
+warnings.filterwarnings("ignore", message=".*nbeta set to 1.*")
 
-from devinterp.slt.sampler import estimate_learning_coeff_with_summary, SGLD
-
-
-# ─── evaluate callback (v1 API) ───────────────────────────────────────────────
-
-def _evaluate(model, data):
-    inputs, labels = data
-    return loss_fn(model(inputs), labels), {}
+from devinterp.optim import SGLD
+from devinterp.utils import default_nbeta
 
 
 # ─── core LLC estimation ──────────────────────────────────────────────────────
@@ -48,43 +51,71 @@ def estimate_llc(
     batch_size: int = 256,
 ) -> dict:
     """
-    Estimate LLC (or drLLC when inputs/labels are a filtered subset).
-    Returns dict: llc_mean (float), llc_std (float), loss_traces (np.ndarray).
+    Run SGLD sampling and estimate LLC.
+    Returns dict: llc_mean, llc_std, loss_traces (num_chains × num_draws).
+
+    LLC = nbeta * (mean_sampling_loss - init_loss)
+    Runs num_chains independent SGLD chains, each for (num_burnin_steps + num_draws) steps.
     """
     model = model.to(device)
+    inputs = inputs.to(device)
+    labels = labels.to(device)
+
+    # Initial loss at the converged weights
     model.eval()
+    with torch.no_grad():
+        init_loss = loss_fn(model(inputs), labels).item()
 
-    loader = DataLoader(
-        TensorDataset(inputs.to(device), labels.to(device)),
-        batch_size=batch_size,
-        shuffle=True,
-    )
+    total_steps = num_burnin_steps + num_draws
+    all_traces = []
 
-    result = estimate_learning_coeff_with_summary(
-        model,
-        loader=loader,
-        evaluate=_evaluate,
-        sampling_method=SGLD,
-        optimizer_kwargs=dict(lr=epsilon, nbeta=nbeta, localization=gamma),
-        num_chains=num_chains,
-        num_draws=num_draws,
-        num_burnin_steps=num_burnin_steps,
-        num_steps_bw_draws=1,
-        device=device,
-        online=True,
-    )
+    for chain_idx in range(num_chains):
+        chain_model = deepcopy(model).to(device)
+        optimizer = SGLD(
+            chain_model.parameters(),
+            lr=epsilon,
+            nbeta=nbeta,
+            localization=gamma,
+        )
 
-    # Handle both scalar return (old devinterp) and dict return (newer devinterp)
-    if hasattr(result, "keys"):
-        llc_mean = float(result.get("llc/mean", result.get("llc_mean", 0.0)))
-        llc_std  = float(result.get("llc/std",  result.get("llc_std",  0.0)))
-        traces   = np.array(result["loss_trace"]) if "loss_trace" in result else np.zeros((num_chains, num_draws))
-    else:
-        llc_mean = float(result)
-        llc_std  = 0.0
-        traces   = np.zeros((num_chains, num_draws))
+        loader = DataLoader(
+            TensorDataset(inputs, labels),
+            batch_size=batch_size,
+            shuffle=True,
+        )
+        batch_iter = _cycle(loader)
 
-    return {"llc_mean": llc_mean, "llc_std": llc_std, "loss_traces": traces}
+        draw_losses = []
+        for step in range(total_steps):
+            batch_x, batch_y = next(batch_iter)
+
+            chain_model.train()
+            optimizer.zero_grad()
+            l = loss_fn(chain_model(batch_x), batch_y)
+            l.backward()
+            optimizer.step()
+
+            if step >= num_burnin_steps:
+                chain_model.eval()
+                with torch.no_grad():
+                    draw_loss = loss_fn(chain_model(inputs), labels).item()
+                draw_losses.append(draw_loss)
+
+        all_traces.append(draw_losses)
+
+    traces = np.array(all_traces)               # (num_chains, num_draws)
+    mean_sampling_loss = traces.mean()
+    chain_means = traces.mean(axis=1)           # (num_chains,)
+
+    llc_mean = nbeta * (mean_sampling_loss - init_loss)
+    llc_std  = nbeta * chain_means.std()
+
+    return {"llc_mean": float(llc_mean), "llc_std": float(llc_std), "loss_traces": traces}
+
+
+def _cycle(loader):
+    while True:
+        yield from loader
 
 
 # ─── process all checkpoints for one (ratio, seed) ───────────────────────────
@@ -134,12 +165,10 @@ def process_checkpoints(
 
         print(f"  Epoch {epoch}: LLC…")
         r_global = estimate_llc(model, test_x, test_y, **llc_kwargs, device=device)
-
         print(f"  Epoch {epoch}: drLLC_add…")
-        r_add = estimate_llc(model, test_add_x, test_add_y, **llc_kwargs, device=device)
-
+        r_add    = estimate_llc(model, test_add_x, test_add_y, **llc_kwargs, device=device)
         print(f"  Epoch {epoch}: drLLC_mult…")
-        r_mult = estimate_llc(model, test_mult_x, test_mult_y, **llc_kwargs, device=device)
+        r_mult   = estimate_llc(model, test_mult_x, test_mult_y, **llc_kwargs, device=device)
 
         row = {
             "epoch":          epoch,
@@ -165,10 +194,12 @@ def process_checkpoints(
 
 # ─── calibration ──────────────────────────────────────────────────────────────
 
-def run_calibration(model, test_x, test_y, device="cpu"):
-    kwargs = dict(epsilon=1e-4, nbeta=1.0, gamma=10.0,
-                  num_chains=8, num_draws=500, num_burnin_steps=100)
-
+def run_calibration(model, test_x, test_y, device="cpu", batch_size=256):
+    # default_nbeta = batch_size / log(batch_size), per devinterp recommendation
+    nbeta_default = default_nbeta(batch_size)
+    kwargs = dict(epsilon=1e-4, nbeta=nbeta_default, gamma=10.0,
+                  num_chains=8, num_draws=500, num_burnin_steps=100,
+                  batch_size=batch_size)
     print("Running calibration with starting hyperparams:")
     for k, v in kwargs.items():
         print(f"  {k} = {v}")
@@ -177,11 +208,9 @@ def run_calibration(model, test_x, test_y, device="cpu"):
 
     print(f"\nLLC mean = {result['llc_mean']:.4f}  std = {result['llc_std']:.4f}")
     traces = result["loss_traces"]
-    if traces.size > 0 and traces.any():
-        for i, chain in enumerate(traces):
-            print(f"  Chain {i}: mean={chain.mean():.4f}  std={chain.std():.4f}  "
-                  f"min={chain.min():.4f}  max={chain.max():.4f}")
-
+    for i, chain in enumerate(traces):
+        print(f"  Chain {i}: mean={chain.mean():.4f}  std={chain.std():.4f}  "
+              f"min={chain.min():.4f}  max={chain.max():.4f}")
     return result
 
 
@@ -189,19 +218,19 @@ def run_calibration(model, test_x, test_y, device="cpu"):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--ratio", type=float, required=True)
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--ratio",  type=float, required=True)
+    p.add_argument("--seed",   type=int,   default=0)
     p.add_argument("--calibrate", action="store_true")
-    p.add_argument("--epsilon", type=float, default=None)
-    p.add_argument("--nbeta",   type=float, default=None)
-    p.add_argument("--gamma",   type=float, default=None)
-    p.add_argument("--num_chains",       type=int, default=None)
-    p.add_argument("--num_draws",        type=int, default=None)
-    p.add_argument("--num_burnin_steps", type=int, default=None)
-    p.add_argument("--checkpoint_dir", default="results/checkpoints")
-    p.add_argument("--metrics_dir",    default="results/metrics")
-    p.add_argument("--config",         default="configs/llc_calibration.yaml")
-    p.add_argument("--data_seed", type=int, default=598)
+    p.add_argument("--epsilon",          type=float, default=None)
+    p.add_argument("--nbeta",            type=float, default=None)
+    p.add_argument("--gamma",            type=float, default=None)
+    p.add_argument("--num_chains",       type=int,   default=None)
+    p.add_argument("--num_draws",        type=int,   default=None)
+    p.add_argument("--num_burnin_steps", type=int,   default=None)
+    p.add_argument("--checkpoint_dir",   default="results/checkpoints")
+    p.add_argument("--metrics_dir",      default="results/metrics")
+    p.add_argument("--config",           default="configs/llc_calibration.yaml")
+    p.add_argument("--data_seed",        type=int,   default=598)
     return p.parse_args()
 
 
