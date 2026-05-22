@@ -95,3 +95,12 @@ Per PROJECT_CONTEXT.md Section 9: "Stop. Wait for Tair to confirm before startin
 - Data split: per Sullivan's approach — shuffle add/mult pools separately before mixing at desired ratio
 
 ---
+
+## 2026-05-23 01:00
+- Updated `notebooks/colab_runner.ipynb`: code now clones from GitHub (`https://github.com/makataomu/slt-diplomka`) each session instead of requiring Drive upload.
+- `results/` is symlinked to `MyDrive/slt_persist/results/` for checkpoint persistence across disconnects.
+- `configs/llc_calibration.yaml` is backed up to `MyDrive/slt_persist/` after calibration and restored on each session start.
+
+**What's next:** Open `notebooks/colab_runner.ipynb` in Colab. Run Section 0 (setup), Section 1 (install), then Section 2 with RATIO=0.50 SEED=0 to verify the pipeline. Confirm before any training.
+
+---
