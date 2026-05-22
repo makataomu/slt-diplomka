@@ -1,0 +1,45 @@
+# Base experiment configuration
+# All values here are defaults; command-line args override them.
+
+model:
+  n_layers: 1
+  n_heads: 4
+  d_model: 128
+  d_head: 32
+  d_mlp: 512
+  act_fn: relu
+  normalization_type: LN
+  mod_value: 113
+  max_nums: 130  # d_vocab = max_nums + 1
+
+data:
+  mod_value: 113
+  max_nums: 130
+  train_frac: 0.5
+  data_seed: 598
+
+training:
+  lr: 1.0e-3
+  weight_decay: 1.0
+  betas: [0.90, 0.98]
+  epochs: 6000
+  checkpoint_every: 60
+  seeds: [0, 1, 2]
+  ratios: [0.30, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70]
+
+llc:
+  # Filled in after calibration — these are starting-point guesses
+  epsilon: 1.0e-4
+  nbeta: 1.0      # inverse temperature × n_train (scaled internally)
+  gamma: 10.0     # localization
+  num_chains: 8
+  num_draws: 500
+  num_burnin_steps: 100
+  num_steps_bw_draws: 1
+  batch_size: 256  # batch size for SGLD loader
+
+paths:
+  checkpoint_dir: results/checkpoints
+  metrics_dir: results/metrics
+  figures_dir: results/figures
+  llc_calibration: configs/llc_calibration.yaml

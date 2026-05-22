@@ -1,0 +1,18 @@
+# LLC SGLD calibration results
+# Filled in after running calibration in Colab (see colab_runner.ipynb Section 3).
+# Use configs/base.yaml values until this file is populated.
+
+calibrated: false
+
+# After calibration, update the values below and set calibrated: true
+epsilon: 1.0e-4
+nbeta: 1.0
+gamma: 10.0
+num_chains: 8
+num_draws: 500
+num_burnin_steps: 100
+
+# Notes from calibration run (fill in):
+calibration_checkpoint: null   # e.g. results/checkpoints/ratio_0.50/seed_0/epoch_06000.pt
+calibration_date: null
+calibration_notes: null
