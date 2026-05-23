@@ -101,6 +101,47 @@ Per PROJECT_CONTEXT.md Section 9: "Stop. Wait for Tair to confirm before startin
 - `results/` is symlinked to `MyDrive/slt_persist/results/` for checkpoint persistence across disconnects.
 - `configs/llc_calibration.yaml` is backed up to `MyDrive/slt_persist/` after calibration and restored on each session start.
 
-**What's next:** Open `notebooks/colab_runner.ipynb` in Colab. Run Section 0 (setup), Section 1 (install), then Section 2 with RATIO=0.50 SEED=0 to verify the pipeline. Confirm before any training.
+---
+
+## 2026-05-23 (session 2) — Pipeline verified, full training started
+
+### devinterp 2.0.1 — final fix
+
+- `estimate_learning_coeff_with_summary` removed in 2.0.1; `sample_single_chain` hardcodes `data["input_ids"]`; v2 `llc()` requires zarr 3.2+ (Colab has older zarr)
+- **Fix:** custom SGLD loop using `devinterp.optim.SGLD` (lr=epsilon, nbeta=nbeta, localization=gamma)
+- Formula: `LLC = nbeta * (mean_draw_loss - init_loss)`; std from per-chain means
+- Notebook pins `zarr==3.1.6` in Section 1 pip install (critical)
+
+### Local pipeline verification (all PASS)
+
+| Test | Result |
+|------|--------|
+| `train.py` 180 epochs | OK — 3 checkpoints, CSV written |
+| `llc_estimation.py` on 3 checkpoints | OK — LLC/drLLC computed, _llc.csv written |
+| `plotting.py` | OK — 5 of 7 figures generated (missing _70_30 because no ratio=0.70 data) |
+
+Early-epoch LLC values are negative (expected — model hasn't grokked; SGLD finds lower-loss neighbors at wide early-training minima). Calibration should be run on the FINAL checkpoint (epoch 6000).
+
+### Local training running now
+
+- `ratio=0.50 seed=0`, 6000 epochs, checkpoint_every=60 → ~100 min on CPU
+- Log: `results/train_0.50_0.log`
+- After it completes: run calibration (`python src/llc_estimation.py --ratio 0.50 --seed 0 --calibrate`), inspect traces, fill in `configs/llc_calibration.yaml`
+
+### What's committed (needs push)
+
+Commit `117b26e` fixes:
+- Notebook Section 1: zarr==3.1.6 pin, fix devinterp version check
+- Notebook Section 3: nbeta default 46.2 (not 1.0)
+- Notebook Section 6: explicit `--epochs 6000 --checkpoint_every 60`
+- `llc_estimation.py`: suppress "Moving model to device" spam
+- `plotting.py`: matplotlib colormaps deprecation fix
+
+### Full experiment plan
+
+1. **Local:** ratio=0.50 seed=0 training running (~100 min) → calibration → `llc_calibration.yaml`
+2. **Colab:** Section 6 full sweep (21 runs, ~10h on T4) → already handles `--resume`
+3. **Colab:** Section 4 LLC estimation per run (3–7h each, need approval)
+4. **Colab:** Section 5 figures after all metrics collected
 
 ---
