@@ -91,7 +91,7 @@ def main():
     print(f"Train: {len(train_x)}  Test: {len(test_x)}  "
           f"Test-add: {len(test_add_x)}  Test-mult: {len(test_mult_x)}")
 
-    model = make_model(device=device)
+    model = make_model(device=device, seed=args.seed)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr, weight_decay=args.weight_decay, betas=(0.90, 0.98)
