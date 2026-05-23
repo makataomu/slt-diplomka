@@ -66,7 +66,7 @@ def average_over_seeds(data: dict, ratio: float):
 
 
 def ratio_colors(ratios=RATIOS):
-    cmap = cm.get_cmap("viridis", len(ratios))
+    cmap = matplotlib.colormaps.get_cmap("viridis").resampled(len(ratios))
     return {r: cmap(i) for i, r in enumerate(ratios)}
 
 

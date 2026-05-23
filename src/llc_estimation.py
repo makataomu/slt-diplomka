@@ -57,7 +57,6 @@ def estimate_llc(
     LLC = nbeta * (mean_sampling_loss - init_loss)
     Runs num_chains independent SGLD chains, each for (num_burnin_steps + num_draws) steps.
     """
-    model = model.to(device)
     inputs = inputs.to(device)
     labels = labels.to(device)
 
@@ -70,7 +69,7 @@ def estimate_llc(
     all_traces = []
 
     for chain_idx in range(num_chains):
-        chain_model = deepcopy(model).to(device)
+        chain_model = deepcopy(model)  # deepcopy preserves device
         optimizer = SGLD(
             chain_model.parameters(),
             lr=epsilon,
