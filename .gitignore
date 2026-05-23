@@ -5,3 +5,8 @@ __pycache__/
 .env
 .DS_Store
 .claude/
+
+# Generated outputs — recreated by running the experiment
+results/
+*.log
+*.err
