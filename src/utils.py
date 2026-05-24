@@ -57,64 +57,51 @@ def make_split_datasets(addition_frac: float, seed: int = 598,
     Returns train_data, train_labels, test_data, test_labels,
             test_add_data, test_add_labels, test_mult_data, test_mult_labels.
 
-    The combined dataset has `addition_frac` fraction of addition examples and
-    (1 - addition_frac) fraction of multiplication examples, with total size
-    fixed by max_nums^2 * 2 (full grids for both operations), then sampled.
-    Sullivan's approach: sample from each operation's full grid separately.
+    Matches Sullivan's pooled-then-split protocol exactly:
+      total_train_size = int((|add| + |mult|) * train_frac)   # = 16 900
+      add_train_size   = int(total_train_size * addition_frac)
+      mult_train_size  = total_train_size - add_train_size
+
+    So at ratio=0.5: 8 450 add + 8 450 mult = 16 900 train; same again for test.
+    Earlier (buggy) version pre-split each operation 50/50, which halved the
+    training set and prevented grokking at middle ratios.
     """
     inputs_add, labels_add, inputs_mult, labels_mult = create_full_dataset(mod_value, max_nums)
 
     rng = torch.Generator()
     rng.manual_seed(seed)
 
-    n_add = len(inputs_add)   # max_nums^2
-    n_mult = len(inputs_mult)  # max_nums^2
+    perm_add  = torch.randperm(len(inputs_add),  generator=rng)
+    perm_mult = torch.randperm(len(inputs_mult), generator=rng)
 
-    # Shuffle each operation's data independently
-    perm_add = torch.randperm(n_add, generator=rng)
-    perm_mult = torch.randperm(n_mult, generator=rng)
+    total_train_size = int((len(inputs_add) + len(inputs_mult)) * train_frac)
+    add_train_size   = int(total_train_size * addition_frac)
+    mult_train_size  = total_train_size - add_train_size
 
-    # Total dataset size: use all examples from both, then mix by ratio
-    # Split each into train/test before mixing (preserves class balance in each split)
-    cut_add = int(n_add * train_frac)
-    cut_mult = int(n_mult * train_frac)
+    # Slice each shuffled pool: first N → train, rest → test
+    train_add_x = inputs_add[perm_add[:add_train_size]]
+    train_add_y = labels_add[perm_add[:add_train_size]]
+    test_add_x  = inputs_add[perm_add[add_train_size:]]
+    test_add_y  = labels_add[perm_add[add_train_size:]]
 
-    train_add_x = inputs_add[perm_add[:cut_add]]
-    train_add_y = labels_add[perm_add[:cut_add]]
-    test_add_x = inputs_add[perm_add[cut_add:]]
-    test_add_y = labels_add[perm_add[cut_add:]]
+    train_mult_x = inputs_mult[perm_mult[:mult_train_size]]
+    train_mult_y = labels_mult[perm_mult[:mult_train_size]]
+    test_mult_x  = inputs_mult[perm_mult[mult_train_size:]]
+    test_mult_y  = labels_mult[perm_mult[mult_train_size:]]
 
-    train_mult_x = inputs_mult[perm_mult[:cut_mult]]
-    train_mult_y = labels_mult[perm_mult[:cut_mult]]
-    test_mult_x = inputs_mult[perm_mult[cut_mult:]]
-    test_mult_y = labels_mult[perm_mult[cut_mult:]]
+    # Combined train: shuffle the mix
+    train_x = torch.cat([train_add_x, train_mult_x])
+    train_y = torch.cat([train_add_y, train_mult_y])
+    perm_tr = torch.randperm(len(train_x), generator=rng)
+    train_x = train_x[perm_tr]
+    train_y = train_y[perm_tr]
 
-    # Mix training data at desired ratio
-    n_train_add = int(len(train_add_x) * addition_frac / (addition_frac + (1 - addition_frac)))
-    n_train_mult = len(train_add_x) - n_train_add  # keep total train size constant
-
-    # Actually: sample proportionally from each pool
-    n_train_total = min(len(train_add_x), len(train_mult_x))  # approx same
-    n_train_add_use = int(n_train_total * addition_frac)
-    n_train_mult_use = n_train_total - n_train_add_use
-
-    n_train_add_use = min(n_train_add_use, len(train_add_x))
-    n_train_mult_use = min(n_train_mult_use, len(train_mult_x))
-
-    train_x = torch.cat([train_add_x[:n_train_add_use], train_mult_x[:n_train_mult_use]])
-    train_y = torch.cat([train_add_y[:n_train_add_use], train_mult_y[:n_train_mult_use]])
-
-    # Shuffle combined training set
-    perm_train = torch.randperm(len(train_x), generator=rng)
-    train_x = train_x[perm_train]
-    train_y = train_y[perm_train]
-
-    # Test set: all held-out examples from both operations
+    # Combined test: shuffle the mix
     test_x = torch.cat([test_add_x, test_mult_x])
     test_y = torch.cat([test_add_y, test_mult_y])
-    perm_test = torch.randperm(len(test_x), generator=rng)
-    test_x = test_x[perm_test]
-    test_y = test_y[perm_test]
+    perm_te = torch.randperm(len(test_x), generator=rng)
+    test_x = test_x[perm_te]
+    test_y = test_y[perm_te]
 
     to = lambda t: t.to(device)
     return (to(train_x), to(train_y), to(test_x), to(test_y),
