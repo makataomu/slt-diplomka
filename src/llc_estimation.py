@@ -197,7 +197,7 @@ def run_calibration(model, test_x, test_y, device="cpu", batch_size=256):
     # default_nbeta = batch_size / log(batch_size), per devinterp recommendation
     nbeta_default = default_nbeta(batch_size)
     kwargs = dict(epsilon=1e-4, nbeta=nbeta_default, gamma=10.0,
-                  num_chains=8, num_draws=500, num_burnin_steps=100,
+                  num_chains=8, num_draws=500, num_burnin_steps=500,
                   batch_size=batch_size)
     print("Running calibration with starting hyperparams:")
     for k, v in kwargs.items():
@@ -220,6 +220,8 @@ def parse_args():
     p.add_argument("--ratio",  type=float, required=True)
     p.add_argument("--seed",   type=int,   default=0)
     p.add_argument("--calibrate", action="store_true")
+    p.add_argument("--checkpoint_epoch", type=int, default=None,
+                   help="Calibrate on this specific epoch (default: latest checkpoint)")
     p.add_argument("--epsilon",          type=float, default=None)
     p.add_argument("--nbeta",            type=float, default=None)
     p.add_argument("--gamma",            type=float, default=None)
@@ -269,7 +271,15 @@ def main():
         if not checkpoints:
             print(f"No checkpoints found in {ckpt_dir}")
             return
-        latest = checkpoints[-1]
+        if args.checkpoint_epoch is not None:
+            available = {int(p.stem.split("_")[1]): p for p in checkpoints}
+            # Pick the closest epoch to the requested one
+            closest = min(available.keys(), key=lambda e: abs(e - args.checkpoint_epoch))
+            latest = available[closest]
+            if closest != args.checkpoint_epoch:
+                print(f"Epoch {args.checkpoint_epoch} not found; using closest: {closest}")
+        else:
+            latest = checkpoints[-1]
         print(f"Calibrating on {latest}")
         model = make_model(device=device)
         ckpt = torch.load(latest, map_location=device, weights_only=False)
@@ -277,7 +287,8 @@ def main():
 
         result = run_calibration(model, test_x, test_y, device=device)
 
-        traces_path = Path(args.metrics_dir) / "calibration_traces.npy"
+        epoch_tag = int(latest.stem.split("_")[1])
+        traces_path = Path(args.metrics_dir) / f"calibration_traces_epoch{epoch_tag}.npy"
         traces_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(traces_path, result["loss_traces"])
         print(f"\nTraces saved to {traces_path}")
